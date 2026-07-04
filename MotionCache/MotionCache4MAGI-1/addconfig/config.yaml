@@ -1,0 +1,29 @@
+rel_l1_thresh: 0.0065
+token_rel_l1_thresh: 0.0065
+warmup_steps: 5
+chunk_wise_only_steps: 20
+discard_nearly_clean_chunk: true
+whole_calc_when_cross: false
+no_reuse_mode: first
+
+compress_kv_cache: false
+total_cache_chunk_nums: 10
+compress_strategy: token
+mix_lambda: 0.07
+query_granularity: frame
+score_weighting_method: no_weight
+power: 3
+
+log: true
+print_peak_memory: true
+debug: false
+
+# token wise cache
+token_wise_reuse: true
+compute_l1_weights_once: false
+print_token_stats: true
+visualize_reuse_mask: false
+temporal_weight_floor: 0.6  # Floor for temporal weight normalization, maps to [floor, 1]
+temporal_weight_power: 1.0  # Power for nonlinear normalization (default: null=linear). Values < 1 make more tokens closer to 1 (convex curve)
+tokenwise_l1_mode: chunk  # Mode for token-level rel_l1 calculation: "chunk" uses chunk-level rel_l1 for all tokens, "token" computes per-token rel_l1 independently
+enable_temporal_voting: false
