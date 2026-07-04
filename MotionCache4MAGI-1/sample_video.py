@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import json
 import subprocess
 import torch
 import multiprocessing as mp
@@ -9,6 +10,17 @@ import re
 from pathlib import Path
 import logging
 from datetime import datetime
+import yaml
+
+
+def load_config(config_path):
+    _, ext = os.path.splitext(config_path)
+    with open(config_path, "r") as f:
+        if ext == ".json":
+            return json.load(f)
+        if ext in [".yaml", ".yml"]:
+            return yaml.safe_load(f)
+    raise ValueError(f"Unsupported config file extension: {ext}")
 
 def setup_gpu_logger(gpu_id: int, base_log_dir: str, run_timestamp: str):
     """Set up independent log file for each GPU"""
@@ -92,6 +104,11 @@ def worker_process(gpu_id: int, rank: int, args: argparse.Namespace, all_samples
     logger, log_file = setup_gpu_logger(gpu_id, args.save_path, run_timestamp)
     logger.info(f"GPU {gpu_id} logger initialized. Log file: {log_file}")
 
+    if getattr(args, "print_peak_memory", False) and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        device = torch.cuda.current_device()
+        print(f"[GPU {gpu_id}] GPU Memory before pipeline: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB allocated")
+
     from inference.pipeline.video_generate import SampleTransport
     if args.reuse_strategy == "original":
         pass
@@ -150,6 +167,7 @@ def worker_process(gpu_id: int, rank: int, args: argparse.Namespace, all_samples
         SampleTransport.token_wise_reuse = args.token_wise_reuse
         SampleTransport.token_rel_l1_thresh = args.token_rel_l1_thresh if args.token_rel_l1_thresh is not None else args.rel_l1_thresh
         SampleTransport.tokenwise_l1_mode = args.tokenwise_l1_mode
+        SampleTransport.compute_l1_weights_once = getattr(args, "compute_l1_weights_once", False)
 
         # Three-phase control parameters
         SampleTransport.warmup_steps = args.warmup_steps
@@ -160,12 +178,6 @@ def worker_process(gpu_id: int, rank: int, args: argparse.Namespace, all_samples
         SampleTransport.initial_token_reuse_ratio = args.initial_token_reuse_ratio
         SampleTransport.final_token_reuse_ratio = args.final_token_reuse_ratio
 
-        # Continuous reuse tracking parameters
-        SampleTransport.enable_continuous_reuse_tracking = args.enable_continuous_reuse_tracking
-        SampleTransport.continuous_reuse_max_count = args.continuous_reuse_max_count
-        SampleTransport.continuous_reuse_decay_mode = args.continuous_reuse_decay_mode
-        SampleTransport.continuous_reuse_decay_factor = args.continuous_reuse_decay_factor
-
         # Temporal weight parameters
         SampleTransport.temporal_weight_floor = args.temporal_weight_floor
         SampleTransport.temporal_weight_power = args.temporal_weight_power
@@ -174,27 +186,7 @@ def worker_process(gpu_id: int, rank: int, args: argparse.Namespace, all_samples
         # Debug and visualization parameters
         SampleTransport.print_token_stats = args.print_token_stats
         SampleTransport.visualize_reuse_mask = args.visualize_reuse_mask
-        SampleTransport.visualize_temporal_diff = args.visualize_temporal_diff
-        # Support both int and list for temporal_diff_step
-        temporal_diff_step_arg = args.temporal_diff_step
-        if isinstance(temporal_diff_step_arg, int):
-            SampleTransport.temporal_diff_steps = [temporal_diff_step_arg]
-        else:
-            SampleTransport.temporal_diff_steps = temporal_diff_step_arg
-        SampleTransport.temporal_diff_mode = args.temporal_diff_mode
-        SampleTransport.final_temporal_diff_masks = {}
-        SampleTransport.final_temporal_diff_latent_sizes = {}
-
-        SampleTransport.visualize_temporal_weights = args.visualize_temporal_weights
-        # Support both int and list for temporal_weights_step
-        temporal_weights_step_arg = args.temporal_weights_step
-        if isinstance(temporal_weights_step_arg, int):
-            SampleTransport.temporal_weights_steps = [temporal_weights_step_arg]
-        else:
-            SampleTransport.temporal_weights_steps = temporal_weights_step_arg
-        SampleTransport.final_temporal_weights_masks = {}
-        SampleTransport.final_temporal_weights_latent_sizes = {}
-        SampleTransport.final_temporal_weights_token_dims = {}
+        SampleTransport.debug = getattr(args, "debug", False)
 
         # --- Per-chunk state ---
         SampleTransport.chunk_accumulated_rel_l1 = None           # List[float]: Accumulated rel L1 for each chunk
@@ -315,6 +307,10 @@ def worker_process(gpu_id: int, rank: int, args: argparse.Namespace, all_samples
             )
             print(f"[✅ GPU {gpu_id}] Saved: {output_path}")
 
+    if getattr(args, "print_peak_memory", False) and torch.cuda.is_available():
+        device = torch.cuda.current_device()
+        print(f"[GPU {gpu_id}] Peak GPU memory: {torch.cuda.max_memory_allocated(device) / 1024**3:.2f} GB")
+
     print(f"[GPU {gpu_id}] Done.")
 
 def load_physicsiq_samples(args):
@@ -392,6 +388,7 @@ def main():
     parser.add_argument('--physicsiq_data_dir', type=str, default='physics-iq-benchmark', help='Root path of the dataset')
     parser.add_argument("--save_path", type=str, default="./benchmark_videos", help="Output directory")
     parser.add_argument("--config_file", type=str, default="example/4.5B/4.5B_distill_config.json", help="Model config file")
+    parser.add_argument("--additional_config", type=str, help="Additional MotionCache config file")
     parser.add_argument("--gpus", type=str, default="0", help="Comma-separated GPU IDs to use")
     parser.add_argument("--reuse_strategy", type=str, choices=['all', 'chunkwise', 'original'], required=True, help="Reuse strategy for video generation")
     parser.add_argument('--rel_l1_thresh', type=float, default=0, help='Relative L1 distance threshold for TeaCache.')
@@ -415,6 +412,7 @@ def main():
 
     # log
     parser.add_argument('--log', action='store_true', help='Whether to log the TeaCache information.')
+    parser.add_argument('--print_peak_memory', action='store_true', help='Print peak GPU memory usage.')
 
     # Token-wise reuse parameters
     parser.add_argument('--token_wise_reuse', action='store_true', help='Enable token-wise reuse strategy.')
@@ -430,12 +428,6 @@ def main():
     parser.add_argument('--initial_token_reuse_ratio', type=float, default=None, help='Initial token reuse ratio at the start of hierarchical phase (for dynamic ratio mode).')
     parser.add_argument('--final_token_reuse_ratio', type=float, default=None, help='Final token reuse ratio at the end of hierarchical phase (for dynamic ratio mode).')
 
-    # Continuous reuse tracking (adaptive refresh mechanism)
-    parser.add_argument('--enable_continuous_reuse_tracking', action='store_true', help='Enable continuous reuse tracking (adaptive refresh mechanism).')
-    parser.add_argument('--continuous_reuse_max_count', type=int, default=None, help='Force forward after N consecutive reuses (set to null for dynamic threshold mode).')
-    parser.add_argument('--continuous_reuse_decay_mode', type=str, default='exponential', choices=['exponential', 'linear'], help='Decay mode for continuous reuse tracking.')
-    parser.add_argument('--continuous_reuse_decay_factor', type=float, default=0.1, help='Decay factor for continuous reuse tracking.')
-
     # Temporal weight parameters
     parser.add_argument('--temporal_weight_floor', type=float, default=0.0, help='Floor for temporal weight normalization, maps weights to [floor, 1] range.')
     parser.add_argument('--temporal_weight_power', type=float, default=None, help='Power for nonlinear temporal weight normalization (default: None=linear). Values < 1 make more tokens closer to 1 (convex curve), > 1 make more tokens closer to floor.')
@@ -444,17 +436,18 @@ def main():
     # Debug and visualization
     parser.add_argument('--print_token_stats', action='store_true', help='Print token-wise reuse statistics.')
     parser.add_argument('--visualize_reuse_mask', action='store_true', help='Visualize token reuse mask on the output video.')
-    parser.add_argument('--visualize_temporal_diff', action='store_true', help='Visualize temporal difference heatmap on the output video.')
-    parser.add_argument('--temporal_diff_step', type=int, nargs='+', default=[0], help='Which denoising step(s) to compute temporal difference mask (0-based). Can be a single step or multiple steps.')
-    parser.add_argument('--temporal_diff_mode', type=str, default='clean', choices=['clean', 'noise'], help='Mode for temporal difference calculation: "clean" uses integrated clean latent, "noise" uses model output (predicted noise).')
-    parser.add_argument('--visualize_temporal_weights', action='store_true', help='Visualize temporal weights heatmap on the output video.')
-    parser.add_argument('--temporal_weights_step', type=int, nargs='+', default=[0], help='Which denoising step(s) to compute temporal weights mask (0-based). Can be a single step or multiple steps.')
 
     # sampling range control
     parser.add_argument('--start', type=int, default=None, help='Start index of samples to process (inclusive)')
     parser.add_argument('--end', type=int, default=None, help='End index of samples to process (exclusive)')
 
     args = parser.parse_args()
+    if args.additional_config:
+        additional_config = load_config(args.additional_config)
+        print(f"Loading additional config: {additional_config}")
+        for key, value in additional_config.items():
+            setattr(args, key, value)
+
     print(f"[✅] Parsed arguments: {args}")
 
     if args.benchmark == 'vbench':

@@ -4,7 +4,7 @@
 export DEVICES="6,7"
 export GPUS_PER_NODE=2
 
-OUTDIR="/path/vbench_samples/enable-compile"
+OUTDIR="/path/vbench_samples/"
 MODEL_ID="/path/SkyReels-V2-DF-1.3B-540P"
 RESOLUTION="540P"
 NUM_FRAMES=177
@@ -33,8 +33,6 @@ WEIGHT_FLOOR="0.6"
 # ============================================
 ENABLE_TEMPORAL_CONSISTENCY=1
 TEMPORAL_CONSISTENCY_THRESHOLD="0.5"
-FIRST_FRAME_FULL_WEIGHT=0
-GROUP0_FIRST_FRAME_MODE="second_frame"
 
 # ============================================
 # Token cache core parameters
@@ -44,12 +42,6 @@ TOKEN_CACHE_THRESHOLD="0.1"
 TOKEN_CACHE_WARMUP=4
 TOKEN_PHASE1_UPDATE_COUNT=6
 TOKEN_DISTANCE_MODE="global"
-
-# Token weight parameters
-TOKEN_WEIGHT_MIN="-100"
-TOKEN_WEIGHT_MAX="100"
-TOKEN_WEIGHT_GAMMA="1.0"
-WEIGHT_SMOOTH_GRID_SIZE="1"
 
 # VBench dimensions
 DIMENSIONS=(
@@ -67,9 +59,6 @@ if [[ "${ENABLE_TOKEN_CACHE}" == "1" ]]; then
   fi
   if [[ "${ENABLE_TEMPORAL_CONSISTENCY}" == "1" ]]; then
     BASE_EXPNAME_PREFIX="${BASE_EXPNAME_PREFIX}_temporal${TEMPORAL_CONSISTENCY_THRESHOLD}"
-  fi
-  if [[ "${GROUP0_FIRST_FRAME_MODE}" != "ones" ]]; then
-    BASE_EXPNAME_PREFIX="${BASE_EXPNAME_PREFIX}_g0ff${GROUP0_FIRST_FRAME_MODE}"
   fi
   BASE_EXPNAME_PREFIX="${BASE_EXPNAME_PREFIX}_SEED_${SEED}"
 else
@@ -98,7 +87,7 @@ if [[ "${ENABLE_FRAME_DIFF_WEIGHT}" == "1" ]]; then
 fi
 echo "Temporal Consistency: on=${ENABLE_TEMPORAL_CONSISTENCY}"
 if [[ "${ENABLE_TEMPORAL_CONSISTENCY}" == "1" ]]; then
-  echo "  threshold=${TEMPORAL_CONSISTENCY_THRESHOLD} g0ff_mode=${GROUP0_FIRST_FRAME_MODE}"
+  echo "  threshold=${TEMPORAL_CONSISTENCY_THRESHOLD}"
 fi
 echo "Total dimensions: ${#DIMENSIONS[@]}"
 echo "Dimensions: ${DIMENSIONS[*]}"
@@ -140,10 +129,6 @@ for DIMENSION in "${DIMENSIONS[@]}"; do
     CMD+=( --token_cache_warmup "${TOKEN_CACHE_WARMUP}" )
     CMD+=( --token_phase1_update_count "${TOKEN_PHASE1_UPDATE_COUNT}" )
     CMD+=( --token_distance_mode "${TOKEN_DISTANCE_MODE}" )
-    CMD+=( --token_weight_min "${TOKEN_WEIGHT_MIN}" )
-    CMD+=( --token_weight_max "${TOKEN_WEIGHT_MAX}" )
-    CMD+=( --token_weight_gamma "${TOKEN_WEIGHT_GAMMA}" )
-    CMD+=( --weight_smooth_grid_size "${WEIGHT_SMOOTH_GRID_SIZE}" )
   fi
 
   # Frame diff weight parameters
@@ -159,12 +144,6 @@ for DIMENSION in "${DIMENSIONS[@]}"; do
   if [[ "${ENABLE_TEMPORAL_CONSISTENCY}" == "1" ]]; then
     CMD+=( --enable_temporal_consistency )
     CMD+=( --temporal_consistency_threshold "${TEMPORAL_CONSISTENCY_THRESHOLD}" )
-  fi
-  if [[ "${FIRST_FRAME_FULL_WEIGHT}" == "1" ]]; then
-    CMD+=( --first_frame_full_weight )
-  fi
-  if [[ "${GROUP0_FIRST_FRAME_MODE}" != "ones" ]]; then
-    CMD+=( --group0_first_frame_mode "${GROUP0_FIRST_FRAME_MODE}" )
   fi
 
   echo "Running:"

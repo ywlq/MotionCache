@@ -22,9 +22,6 @@ import torch
 import yaml, json
 from dataclasses import replace
 from types import MethodType
-import matplotlib
-matplotlib.use('Agg')  # For non-interactive backend
-import matplotlib.pyplot as plt
 
 from inference.pipeline import MagiPipeline
 from inference.pipeline.video_generate import SampleTransport, find_dit_model
@@ -117,61 +114,6 @@ def apply_temporal_voting(
     return voted_mask
 
 
-def visualize_temporal_weights_distribution(
-    temporal_weights: torch.Tensor,
-    frame_index: int,
-    save_path: str = None,
-    title_prefix: str = "Temporal Weights Distribution"
-):
-    """
-    Visualize the distribution of temporal weights
-
-    Args:
-        temporal_weights: [total_T, tokens_per_frame] Tensor containing weights for each token in each frame
-        frame_index: Frame index to visualize
-        save_path: Path to save the image (PNG format), auto-generated if None
-        title_prefix: Prefix for the chart title
-    """
-    if frame_index >= temporal_weights.shape[0]:
-        raise ValueError(f"frame_index {frame_index} out of range [0, {temporal_weights.shape[0]-1}]")
-
-    # Extract weights for specified frame and convert to numpy
-    frame_weights = temporal_weights[frame_index].cpu().numpy()  # [tokens_per_frame]
-
-    # Sort by weight value in descending order
-    sorted_indices = frame_weights.argsort()[::-1]  # Indices sorted in descending order
-    sorted_weights = frame_weights[sorted_indices]
-
-    # Create chart
-    plt.figure(figsize=(12, 6))
-    plt.plot(range(len(sorted_weights)), sorted_weights, linewidth=1.5, color='#2E86AB')
-    plt.xlabel('Token Index (sorted by weight value, descending)', fontsize=12)
-    plt.ylabel('Weight Value', fontsize=12)
-    plt.title(f'{title_prefix} - Frame {frame_index}', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3, linestyle='--')
-
-    # Add statistics information
-    mean_weight = sorted_weights.mean()
-    std_weight = sorted_weights.std()
-    min_weight = sorted_weights.min()
-    max_weight = sorted_weights.max()
-
-    stats_text = f'Mean: {mean_weight:.4f} | Std: {std_weight:.4f} | Min: {min_weight:.4f} | Max: {max_weight:.4f}'
-    plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes,
-             fontsize=10, verticalalignment='top',
-             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-
-    plt.tight_layout()
-
-    # Save image
-    if save_path is None:
-        save_path = f"temporal_weights_frame_{frame_index}.png"
-
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    print(f"[Visualization] Saved temporal weights distribution to: {save_path}")
-    plt.close()
-
-
 def teacache_forward_velocity(self, infer_idx: int, cur_denoise_step: int) -> torch.Tensor:
         # 1. Get current work status
         x = self.xs[infer_idx]
@@ -211,10 +153,6 @@ def teacache_forward_velocity(self, infer_idx: int, cur_denoise_step: int) -> to
             # Initialize temporal weights storage for token-level reuse
             if not hasattr(self, 'temporal_weights') or self.temporal_weights is None:
                 self.temporal_weights = {}
-            # Initialize continuous reuse tracking for adaptive refresh
-            if getattr(self, 'enable_continuous_reuse_tracking', False):
-                if not hasattr(self, 'token_continuous_reuse_count') or self.token_continuous_reuse_count is None:
-                    self.token_continuous_reuse_count = {}
             # Reset chunk_reuse_flags for each step
             self.chunk_reuse_flags = {i: False for i in range(transport_input.chunk_num)}
         else:
@@ -432,15 +370,6 @@ def teacache_forward_velocity(self, infer_idx: int, cur_denoise_step: int) -> to
                                         chunk_token_nums, dtype=torch.bool, device=curr_feat.device
                                     )
 
-                                # Reset continuous reuse count (not tracking in warmup phase)
-                                if getattr(self, 'enable_continuous_reuse_tracking', False):
-                                    if i not in self.token_continuous_reuse_count:
-                                        self.token_continuous_reuse_count[i] = torch.zeros(
-                                            chunk_token_nums, dtype=torch.int32, device=curr_feat.device
-                                        )
-                                    else:
-                                        self.token_continuous_reuse_count[i] = torch.zeros_like(self.token_continuous_reuse_count[i])
-
                             # ============ stage2: Chunk-wise Onlystage ============
                             elif in_chunk_wise_only_phase(chunk_step_cnt, self.warmup_steps, self.chunk_wise_only_steps):
                                 # only use chunk-level cache, do not use token-level cache
@@ -474,25 +403,9 @@ def teacache_forward_velocity(self, infer_idx: int, cur_denoise_step: int) -> to
                                 else:
                                     self.token_reuse_masks[i] = torch.zeros_like(self.token_reuse_masks[i])
 
-                                # Reset continuous reuse count (not tracking in chunk_wise_only phase)
-                                if getattr(self, 'enable_continuous_reuse_tracking', False):
-                                    if i not in self.token_continuous_reuse_count:
-                                        self.token_continuous_reuse_count[i] = torch.zeros(
-                                            chunk_token_nums, dtype=torch.int32, device=curr_feat.device
-                                        )
-                                    else:
-                                        self.token_continuous_reuse_count[i] = torch.zeros_like(self.token_continuous_reuse_count[i])
-
                             # ============ stage3: Token-wisestage ============
                             elif in_token_wise_phase(chunk_step_cnt, self.warmup_steps, self.chunk_wise_only_steps):
                                 # directly use token-level cache, no longer use chunk-level determine
-
-                                # Initialize continuous reuse tracking (only in token-wise phase)
-                                if getattr(self, 'enable_continuous_reuse_tracking', False):
-                                    if i not in self.token_continuous_reuse_count:
-                                        self.token_continuous_reuse_count[i] = torch.zeros(
-                                            chunk_token_nums, dtype=torch.int32, device=curr_feat.device
-                                        )
 
                                 # chunk-level no longer reuse, always set to False
                                 self.chunk_reuse_flags[i] = False
@@ -584,37 +497,7 @@ def teacache_forward_velocity(self, infer_idx: int, cur_denoise_step: int) -> to
                                                                      dtype=torch.float32, device=curr_feat.device)
                                         accumulated = self.token_accumulated_rel_l1[i] + weighted_rel_l1
 
-
-                                # Calculate dynamic threshold based on continuous reuse count
-                                if getattr(self, 'enable_continuous_reuse_tracking', False):
-                                    max_count = getattr(self, 'continuous_reuse_max_count', None)
-
-                                    if max_count is not None:
-                                        # Mode 2: Force forward after N consecutive reuses
-                                        # First, calculate reuse_mask using normal threshold
-                                        reuse_mask = accumulated < token_threshold
-                                        # Then, force forward tokens that have reached max_count
-                                        forced_forward_mask = self.token_continuous_reuse_count[i] >= max_count
-                                        reuse_mask = reuse_mask & ~forced_forward_mask
-                                    else:
-                                        # Mode 1: Dynamic threshold (gradually lower threshold)
-                                        decay_mode = getattr(self, 'continuous_reuse_decay_mode', 'exponential')
-                                        decay_factor = getattr(self, 'continuous_reuse_decay_factor', 0.1)
-
-                                        if decay_mode == 'exponential':
-                                            # Formula A: threshold * decay_factor^count
-                                            # decay_factor = 0.1 means multiply by 0.9 each time (10% decay)
-                                            decay_rate = 1.0 - decay_factor
-                                            dynamic_threshold = token_threshold * (decay_rate ** self.token_continuous_reuse_count[i])
-                                        else:  # linear
-                                            # Formula B: threshold / (1 + decay_factor * count)
-                                            # decay_factor = 0.1 means divide by (1 + 0.1*count)
-                                            dynamic_threshold = token_threshold / (1 + decay_factor * self.token_continuous_reuse_count[i])
-
-                                        reuse_mask = accumulated < dynamic_threshold
-                                else:
-                                    # Original logic (backward compatibility)
-                                    reuse_mask = accumulated < token_threshold
+                                reuse_mask = accumulated < token_threshold
 
 
                                 # ============= Apply token reuse ratio limit =============
@@ -688,15 +571,6 @@ def teacache_forward_velocity(self, infer_idx: int, cur_denoise_step: int) -> to
                                     # Update reuse_mask
                                     self.token_reuse_masks[i] = reuse_mask
 
-                                # Update continuous reuse count
-                                # Reused tokens: count + 1
-                                # Forward tokens: count reset to 0
-                                if getattr(self, 'enable_continuous_reuse_tracking', False):
-                                    self.token_continuous_reuse_count[i] = torch.where(
-                                        reuse_mask,
-                                        self.token_continuous_reuse_count[i] + 1,
-                                        torch.zeros_like(self.token_continuous_reuse_count[i])
-                                    )
                             else:
                                 # Should not reach here
                                 raise ValueError(f"Invalid step count: {chunk_step_cnt}, warmup_steps: {self.warmup_steps}, chunk_wise_only_steps: {self.chunk_wise_only_steps}")
@@ -1717,102 +1591,11 @@ def teacache_integrate_velocity(self, infer_idx: int, cur_denoise_step: int):
 
         self.temporal_weights[infer_idx] = temporal_weights
 
-        # ============= Visualize temporal weights distribution (Optional) =============
-        # cancelcommenttoenablevisualization
-        # if self.cnt == 45:
-        #     visualize_temporal_weights_distribution(
-        #         temporal_weights=temporal_weights[:6],
-        #         frame_index=3,  # specify frame index to visualize (start from 0)
-        #         save_path="temporal_weights_frame_chunk0.png",  # optional: customize save path
-        #         title_prefix="Temporal Weights Distribution"
-        #     )
-        #     visualize_temporal_weights_distribution(
-        #         temporal_weights=temporal_weights[6:],
-        #         frame_index=3,  # specify frame index to visualize (start from 0)
-        #         save_path="temporal_weights_frame_chunk1.png",  # optional: customize save path
-        #         title_prefix="Temporal Weights Distribution"
-        #     )
-        #     import pdb; pdb.set_trace()
-
-        # ============= Save temporal weights for visualization =============
-        if self.visualize_temporal_weights:
-            # Check if current step is in the list of steps to save
-            if self.cnt in self.temporal_weights_steps:
-                # Check if this is the last chunk (i.e., all chunks processed for this step)
-                is_last_chunk = (chunk_end == transport_input.chunk_num)
-                if is_last_chunk:
-                    # temporal_weights: [total_T, tokens_per_frame]
-                    # Need to reshape to [total_T, H_tokens, W_tokens] for spatial visualization
-                    # We already have H_tokens and W_tokens from earlier calculation
-                    weights_reshaped = temporal_weights.view(total_T, H_tokens, W_tokens)  # [total_T, H_tokens, W_tokens]
-
-                    # Store for visualization in dict with step as key
-                    self.final_temporal_weights_masks[self.cnt] = weights_reshaped.clone().detach()
-                    self.final_temporal_weights_latent_sizes[self.cnt] = (N, C, total_T, H, W)
-                    self.final_temporal_weights_token_dims[self.cnt] = (H_tokens, W_tokens)
-
-                    # Assign to SampleTransport class attributes for pipeline.py to access
-                    SampleTransport.final_temporal_weights_masks = self.final_temporal_weights_masks
-                    SampleTransport.final_temporal_weights_latent_sizes = self.final_temporal_weights_latent_sizes
-                    SampleTransport.final_temporal_weights_token_dims = self.final_temporal_weights_token_dims
-
-
     if self.compress_kv_cache:
         # Check if clean chunk compression should be performed
         compress_clean_chunks_to_make_space(self, infer_idx, chunk_start, transport_input)
 
-    # 11. Save temporal difference mask for visualization (if enabled)
-    if self.visualize_temporal_diff:
-        # Check if current step is in the list of steps to save
-        if self.cnt in self.temporal_diff_steps:
-            # Check if this is the last chunk (i.e., all chunks processed for this step)
-            is_last_chunk = (chunk_end == transport_input.chunk_num)
-            if is_last_chunk:
-                # Choose data source based on temporal_diff_mode
-                if self.temporal_diff_mode == 'noise':
-                    # Use model output (predicted noise/velocity)
-                    velocity_dict = self.velocities[infer_idx]
-
-                    # Concatenate all chunks in order to get full velocity tensor
-                    sorted_chunk_ids = sorted(velocity_dict.keys())
-                    velocity_chunks = [velocity_dict[i] for i in sorted_chunk_ids]
-
-                    # Concatenate along temporal dimension (dim=2)
-                    # Each chunk has shape [N, C, chunk_width, H, W]
-                    # Result has shape [N, C, total_T, H, W]
-                    data_for_diff = torch.cat(velocity_chunks, dim=2)
-                else:
-                    # Use integrated clean latent (default behavior)
-                    # self.xs[infer_idx] shape: [2*N, C, total_T, H, W], we only need the first N
-                    x_full = self.xs[infer_idx]
-                    N = x_full.shape[0] // 2  # Split point
-                    data_for_diff = x_full[:N]  # [N, C, total_T, H, W]
-
-                # Check if we have at least 2 frames to compute difference
-                if data_for_diff.shape[2] < 2:
-                    print(f"[WARNING] Cannot compute temporal difference: only {data_for_diff.shape[2]} frames available, need at least 2")
-                else:
-                    # Calculate frame-to-frame differences along temporal dimension
-                    # diff[t] = |x[t] - x[t-1]|
-                    x_diff = torch.abs(data_for_diff[:, :, 1:] - data_for_diff[:, :, :-1])  # [N, C, T-1, H, W]
-
-                    # Average over temporal dimension to get spatial heatmap
-                    # This gives us the average frame-to-frame change at each spatial location
-                    temporal_heatmap = x_diff.mean(dim=2)  # [N, C, H, W]
-
-                    # Average over channel dimension (C) to get single scalar per spatial location
-                    temporal_heatmap = temporal_heatmap.mean(dim=1)  # [N, H, W]
-
-                    # Store for visualization in dict with step as key
-                    self.final_temporal_diff_masks[self.cnt] = temporal_heatmap.clone().detach()
-                    self.final_temporal_diff_latent_sizes[self.cnt] = data_for_diff.shape  # Store original shape
-
-                    # Assign to SampleTransport class attributes for pipeline.py to access
-                    SampleTransport.final_temporal_diff_masks = self.final_temporal_diff_masks
-                    SampleTransport.final_temporal_diff_latent_sizes = self.final_temporal_diff_latent_sizes
-
-
-    # 12. Return clean chunk
+    # 11. Return clean chunk
     if chunk_denoise_count[chunk_start] == transport_input.num_steps:
         if transport_input.prefix_video is not None:
             prefix_video_length = transport_input.prefix_video.size(2)
@@ -2094,11 +1877,6 @@ def parse_arguments():
     parser.add_argument('--visualize_reuse_mask', action='store_true', help='Visualize token reuse mask on the output video.')
     parser.add_argument('--temporal_weight_floor', type=float, default=0.0, help='Floor for temporal weight normalization, maps weights to [floor, 1] range.')
     parser.add_argument('--temporal_weight_power', type=float, default=None, help='Power for nonlinear temporal weight normalization (default: None=linear). Values < 1 make more tokens closer to 1 (convex curve), > 1 make more tokens closer to floor.')
-    parser.add_argument('--visualize_temporal_diff', action='store_true', help='Visualize temporal difference heatmap on the output video.')
-    parser.add_argument('--temporal_diff_step', type=int, nargs='+', default=[0], help='Which denoising step(s) to compute temporal difference mask (0-based). Can be a single step or multiple steps.')
-    parser.add_argument('--temporal_diff_mode', type=str, default='clean', choices=['clean', 'noise'], help='Mode for temporal difference calculation: "clean" uses integrated clean latent, "noise" uses model output (predicted noise).')
-    parser.add_argument('--visualize_temporal_weights', action='store_true', help='Visualize temporal weights heatmap on the output video.')
-    parser.add_argument('--temporal_weights_step', type=int, nargs='+', default=[0], help='Which denoising step(s) to compute temporal weights mask (0-based). Can be a single step or multiple steps.')
     parser.add_argument('--enable_temporal_voting', action='store_true', help='Enable temporal voting: force tokens at the same spatial position across frames to have the same reuse decision via majority voting.')
 
     return parser.parse_args()
@@ -2155,11 +1933,6 @@ def main():
     # Dynamic token reuse ratio parameters (for token-wise phase)
     SampleTransport.initial_token_reuse_ratio = getattr(args, 'initial_token_reuse_ratio', None)
     SampleTransport.final_token_reuse_ratio = getattr(args, 'final_token_reuse_ratio', None)
-    # Continuous reuse tracking parameters (for adaptive refresh)
-    SampleTransport.enable_continuous_reuse_tracking = getattr(args, 'enable_continuous_reuse_tracking', False)
-    SampleTransport.continuous_reuse_max_count = getattr(args, 'continuous_reuse_max_count', None)  # Force forward after N consecutive reuses
-    SampleTransport.continuous_reuse_decay_mode = getattr(args, 'continuous_reuse_decay_mode', 'exponential')
-    SampleTransport.continuous_reuse_decay_factor = getattr(args, 'continuous_reuse_decay_factor', 0.1)
     SampleTransport.enable_temporal_voting = getattr(args, 'enable_temporal_voting', False)
     # --- Token-level reuse state ---
     SampleTransport.token_accumulated_rel_l1 = None           # Dict: token-level accumulated rel L1
@@ -2175,30 +1948,6 @@ def main():
     SampleTransport.visualize_reuse_mask = args.visualize_reuse_mask
     SampleTransport.final_reuse_masks = None  # Store final reuse masks for visualization
     SampleTransport.final_chunk_num = None    # Store total chunk count for mask assembly
-
-    # ============= Temporal Difference Visualization =================
-    SampleTransport.visualize_temporal_diff = getattr(args, 'visualize_temporal_diff', False)
-    temporal_diff_step_arg = getattr(args, 'temporal_diff_step', 0)
-    # Support both int and list for temporal_diff_step
-    if isinstance(temporal_diff_step_arg, int):
-        SampleTransport.temporal_diff_steps = [temporal_diff_step_arg]
-    else:
-        SampleTransport.temporal_diff_steps = temporal_diff_step_arg
-    SampleTransport.temporal_diff_mode = getattr(args, 'temporal_diff_mode', 'clean')  # 'clean' or 'noise'
-    SampleTransport.final_temporal_diff_masks = {}  # Dict: {step: mask} for multiple steps
-    SampleTransport.final_temporal_diff_latent_sizes = {}  # Dict: {step: latent_size}
-
-    # ============= Temporal Weights Visualization =================
-    SampleTransport.visualize_temporal_weights = getattr(args, 'visualize_temporal_weights', False)
-    temporal_weights_step_arg = getattr(args, 'temporal_weights_step', 0)
-    # Support both int and list for temporal_weights_step
-    if isinstance(temporal_weights_step_arg, int):
-        SampleTransport.temporal_weights_steps = [temporal_weights_step_arg]
-    else:
-        SampleTransport.temporal_weights_steps = temporal_weights_step_arg
-    SampleTransport.final_temporal_weights_masks = {}  # Dict: {step: weights_tensor}
-    SampleTransport.final_temporal_weights_latent_sizes = {}  # Dict: {step: latent_size}
-    SampleTransport.final_temporal_weights_token_dims = {}  # Dict: {step: (H_tokens, W_tokens)}
 
     # ============= KV Cache Compression =================
     SampleTransport.compress_kv_cache = args.compress_kv_cache

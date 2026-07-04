@@ -80,18 +80,10 @@ if __name__ == "__main__":
                         help="Unified threshold for token cache (default: 0.10)")
     parser.add_argument("--token_cache_warmup", type=int, default=4,
                         help="Number of warmup steps before enabling token cache (default: 5)")
-    parser.add_argument("--token_weight_min", type=float, default=0.5,
-                        help="Minimum weight for static regions (default: 0.5)")
-    parser.add_argument("--token_weight_max", type=float, default=2.0,
-                        help="Maximum weight for dynamic regions (default: 2.0)")
     parser.add_argument("--token_phase1_update_count", type=int, default=3,
                         help="Number of updates in phase 1 before switching to differentiated weights (default: 3)")
     parser.add_argument("--token_distance_mode", type=str, choices=["token", "global"], default="token",
                         help="Distance calculation mode: 'token' for per-token distance, 'global' for overall L1 distance (default: token)")
-    parser.add_argument("--token_weight_gamma", type=float, default=1.0,
-                        help="Power transformation gamma for weight differentiation: >1 amplifies differences, <1 reduces differences, =1 no change (default: 1.0)")
-    parser.add_argument("--weight_smooth_grid_size", type=int, default=1,
-                        help="Grid size for weight smoothing: n=1 means each token has independent weight, n>1 means n×n region shares same weight (default: 1)")
     # Static weight mask arguments
     parser.add_argument("--enable_static_weight", action="store_true",
                         help="Enable static weight mask for specified region (uses fixed weight instead of dynamic weights)")
@@ -139,13 +131,6 @@ if __name__ == "__main__":
                         help="Enable temporal consistency constraint to reduce noise in static regions")
     parser.add_argument("--temporal_consistency_threshold", type=float, default=0.5,
                         help="Threshold for temporal consistency (default: 0.5)")
-    parser.add_argument("--first_frame_full_weight", action="store_true",
-                        help="Use full weight (1.0) for the first frame in each group")
-    parser.add_argument("--group0_first_frame_mode", type=str, default="ones",
-                        choices=["ones", "second_frame", "group_mean"],
-                        help="Mode for group0 first frame weight estimation: 'ones' (default, use 1.0), "
-                             "'second_frame' (use 2nd frame diff), 'group_mean' (use group mean diff)")
-
     # ============================================
     # Minimum update ratio parameters
     # ============================================
@@ -270,12 +255,8 @@ if __name__ == "__main__":
             enable=True,
             threshold=args.token_cache_threshold,
             warmup_steps=args.token_cache_warmup,
-            weight_min=args.token_weight_min,
-            weight_max=args.token_weight_max,
             phase1_update_count=args.token_phase1_update_count,
-            distance_mode=args.token_distance_mode,
-            weight_gamma=args.token_weight_gamma,
-            weight_smooth_grid_size=args.weight_smooth_grid_size
+            distance_mode=args.token_distance_mode
         )
 
     # Configure static weight mask
@@ -343,12 +324,10 @@ if __name__ == "__main__":
         pipe.transformer.set_weight_norm_mode(args.weight_norm_mode, args.weight_floor)
 
     # Configure temporal consistency constraint
-    if args.enable_temporal_consistency or args.first_frame_full_weight or args.group0_first_frame_mode != "ones":
+    if args.enable_temporal_consistency:
         pipe.transformer.set_temporal_consistency_config(
             enable=args.enable_temporal_consistency,
             threshold=args.temporal_consistency_threshold,
-            first_frame_full_weight=args.first_frame_full_weight,
-            group0_first_frame_mode=args.group0_first_frame_mode
         )
 
     # Configure minimum update ratio

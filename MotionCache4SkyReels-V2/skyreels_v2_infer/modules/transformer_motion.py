@@ -834,10 +834,7 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.token_cache_enabled = False
         self.token_cache_threshold = 0.10
         self.token_cache_warmup_steps = 5
-        self.weight_min = 0.5
-        self.weight_max = 2.0
         self.token_phase1_update_count = 3
-        self.token_weight_gamma = 1.0
 
         self.token_accumulated_even = {}  # {group_idx: Tensor[L]}
         self.token_accumulated_odd = {}
@@ -856,8 +853,6 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.use_frame_diff_weight = False
         self.frame_diff_viz_enabled = False
         self.frame_diff_viz_output_dir = "./result/frame_diff_viz"
-
-        self.weight_smooth_grid_size = 1
         # =============== Token-wise Cache End =================
 
         # =============== Static Weight Mask Start =================
@@ -884,8 +879,6 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # =============== Temporal Consistency Constraint =================
         self.use_temporal_consistency = False
         self.temporal_consistency_threshold = 0.5
-        self.first_frame_full_weight = False
-        self.group0_first_frame_mode = "ones"
         # =============== Temporal Consistency Constraint End =================
 
         # =============== Minimum Update Ratio =================
@@ -1504,19 +1497,13 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
 
     def set_token_cache_config(self, enable=False, threshold=0.10,
-                               warmup_steps=5, weight_min=0.5,
-                               weight_max=2.0, phase1_update_count=3,
-                               distance_mode="token", weight_gamma=1.0,
-                               weight_smooth_grid_size=1):
+                               warmup_steps=5, phase1_update_count=3,
+                               distance_mode="token"):
         self.token_cache_enabled = enable
         self.token_cache_threshold = threshold
         self.token_cache_warmup_steps = warmup_steps
-        self.weight_min = weight_min
-        self.weight_max = weight_max
         self.token_phase1_update_count = phase1_update_count
         self.token_distance_mode = distance_mode  # "token" or "global"
-        self.token_weight_gamma = weight_gamma
-        self.weight_smooth_grid_size = weight_smooth_grid_size
 
         self.token_accumulated_even = {}
         self.token_accumulated_odd = {}
@@ -1580,17 +1567,11 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         self.weight_norm_mode = mode
         self.weight_floor = weight_floor
 
-    def set_temporal_consistency_config(self, enable=False, threshold=0.5, first_frame_full_weight=False, group0_first_frame_mode="ones"):
+    def set_temporal_consistency_config(self, enable=False, threshold=0.5):
         self.use_temporal_consistency = enable
         self.temporal_consistency_threshold = threshold
-        self.first_frame_full_weight = first_frame_full_weight
-        self.group0_first_frame_mode = group0_first_frame_mode
         if enable:
             print(f"Temporal consistency constraint enabled: threshold={threshold}")
-        if first_frame_full_weight:
-            print(f"First frame full weight enabled")
-        if group0_first_frame_mode != "ones":
-            print(f"Group0 first frame mode: {group0_first_frame_mode}")
 
     def set_min_update_ratio(self, min_ratio=0.0):
         if min_ratio < 0 or min_ratio > 1:
@@ -1634,41 +1615,6 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
     def _get_token_phase1_done(self, cond_flag):
         return self.token_phase1_done_even if cond_flag else self.token_phase1_done_odd
 
-    def _smooth_weights_by_grid(self, weights, H, W, grid_size):
-        if grid_size <= 1:
-            return weights
-
-        pad_h = (grid_size - H % grid_size) % grid_size
-        pad_w = (grid_size - W % grid_size) % grid_size
-
-        if pad_h > 0 or pad_w > 0:
-            if pad_w > 0:
-                right_edge = weights[:, -1:].expand(-1, pad_w)
-                weights_padded = torch.cat([weights, right_edge], dim=1)
-            else:
-                weights_padded = weights
-            if pad_h > 0:
-                bottom_edge = weights_padded[-1:, :].expand(pad_h, -1)
-                weights_padded = torch.cat([weights_padded, bottom_edge], dim=0)
-        else:
-            weights_padded = weights
-
-        H_padded, W_padded = weights_padded.shape
-
-        weights_reshaped = weights_padded.view(
-            H_padded // grid_size, grid_size,
-            W_padded // grid_size, grid_size
-        )
-        grid_means = weights_reshaped.mean(dim=(1, 3))
-
-        smoothed = grid_means.unsqueeze(1).unsqueeze(3).expand(
-            -1, grid_size, -1, grid_size
-        ).contiguous().reshape(H_padded, W_padded)
-
-        smoothed = smoothed[:H, :W].contiguous()
-
-        return smoothed
-
     def _compute_weights_from_output(self, output, grid_sizes):
         B, L, C = output.shape
         group_size = grid_sizes[0]
@@ -1679,30 +1625,9 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         token_importance = torch.abs(output_reshaped).mean(dim=(0, 3))  # [group_size, H*W]
 
-        if self.token_weight_gamma != 1.0:
-            mean_imp = token_importance.mean(dim=1, keepdim=True)
-            token_importance = mean_imp * torch.pow(token_importance / (mean_imp + 1e-8), self.token_weight_gamma)
-
         # [group_size, 1]
         frame_mean = token_importance.mean(dim=1, keepdim=True)
         weights = token_importance / (frame_mean + 1e-8)
-
-        weights = weights.clamp(min=self.weight_min, max=self.weight_max)
-
-        if self.weight_smooth_grid_size > 1:
-            H_val = H.item() if hasattr(H, 'item') else H
-            W_val = W.item() if hasattr(W, 'item') else W
-            smoothed_weights = []
-            for f in range(group_size):
-                frame_weights = weights[f].view(H_val, W_val)
-                smoothed_frame = self._smooth_weights_by_grid(
-                    frame_weights, H_val, W_val, self.weight_smooth_grid_size
-                )
-                smoothed_weights.append(smoothed_frame.view(-1))
-            weights = torch.stack(smoothed_weights, dim=0)  # [group_size, H*W]
-
-        if self.first_frame_full_weight:
-            weights[0, :] = 1.0
 
         weights = weights.view(L)
 
@@ -1731,10 +1656,7 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
             if frame_idx == 0:
                 if group_idx == 0:
-                    if self.group0_first_frame_mode == "ones":
-                        frame_diff[frame_idx] = torch.ones(spatial_size, device=output.device, dtype=torch.float32)
-                    else:
-                        frame_diff[frame_idx] = torch.zeros(spatial_size, device=output.device, dtype=torch.float32)
+                    frame_diff[frame_idx] = torch.zeros(spatial_size, device=output.device, dtype=torch.float32)
                 elif group_idx - 1 in prev_group_last_frame_dict:
                     prev_frame = prev_group_last_frame_dict[group_idx - 1]  # [B, H*W, C]
                     diff = (current_frame - prev_frame).abs().mean(dim=(0, 2))  # [H*W]
@@ -1750,15 +1672,8 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         prev_group_last_frame_dict[group_idx] = output_reshaped[:, -1, :, :].clone()  # [B, H*W, C]
 
-        if group_idx == 0 and self.group0_first_frame_mode != "ones":
-            if self.group0_first_frame_mode == "second_frame":
-                frame_diff[0] = frame_diff[1].clone()
-            elif self.group0_first_frame_mode == "group_mean":
-                frame_diff[0] = frame_diff[1:].mean(dim=0)
-
-        if self.token_weight_gamma != 1.0:
-            mean_diff = frame_diff.mean(dim=1, keepdim=True)
-            frame_diff = mean_diff * torch.pow(frame_diff / (mean_diff + 1e-8), self.token_weight_gamma)
+        if group_idx == 0:
+            frame_diff[0] = frame_diff[1].clone()
 
         if self.weight_norm_mode == "max":
             frame_max = frame_diff.max(dim=1, keepdim=True)[0]
@@ -1771,26 +1686,6 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         else:
             frame_mean = frame_diff.mean(dim=1, keepdim=True)
             weights = frame_diff / (frame_mean + 1e-8)
-
-        weights = weights.clamp(min=self.weight_min, max=self.weight_max)
-
-        if group_idx == 0 and self.group0_first_frame_mode == "ones":
-            weights[0, :] = 1.0
-
-        if self.weight_smooth_grid_size > 1:
-            H_val = H.item() if hasattr(H, 'item') else H
-            W_val = W.item() if hasattr(W, 'item') else W
-            smoothed_weights = []
-            for f in range(group_size):
-                frame_weights = weights[f].view(H_val, W_val)
-                smoothed_frame = self._smooth_weights_by_grid(
-                    frame_weights, H_val, W_val, self.weight_smooth_grid_size
-                )
-                smoothed_weights.append(smoothed_frame.view(-1))
-            weights = torch.stack(smoothed_weights, dim=0)  # [group_size, H*W]
-
-        if self.first_frame_full_weight:
-            weights[0, :] = 1.0
 
         weights = weights.view(L)
 
@@ -1817,10 +1712,7 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
             if frame_idx == 0:
                 if group_idx == 0:
-                    if self.group0_first_frame_mode == "ones":
-                        frame_diff_raw[frame_idx] = torch.ones(H_raw, W_raw, device=x_raw.device, dtype=torch.float32)
-                    else:
-                        frame_diff_raw[frame_idx] = torch.zeros(H_raw, W_raw, device=x_raw.device, dtype=torch.float32)
+                    frame_diff_raw[frame_idx] = torch.zeros(H_raw, W_raw, device=x_raw.device, dtype=torch.float32)
                 elif group_idx - 1 in prev_group_last_frame_input_dict:
                     prev_frame = prev_group_last_frame_input_dict[group_idx - 1]  # [B, H_raw, W_raw, C]
                     diff = (current_frame - prev_frame).abs().mean(dim=(0, 3))  # [H_raw, W_raw]
@@ -1836,20 +1728,13 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         prev_group_last_frame_input_dict[group_idx] = x_reshaped[:, -1, :, :, :].clone()
 
-        if group_idx == 0 and self.group0_first_frame_mode != "ones":
-            if self.group0_first_frame_mode == "second_frame":
-                frame_diff_raw[0] = frame_diff_raw[1].clone()
-            elif self.group0_first_frame_mode == "group_mean":
-                frame_diff_raw[0] = frame_diff_raw[1:].mean(dim=0)
+        if group_idx == 0:
+            frame_diff_raw[0] = frame_diff_raw[1].clone()
 
         frame_diff_raw_4d = frame_diff_raw.unsqueeze(1)  # [F, 1, H_raw, W_raw]
         frame_diff = torch.nn.functional.avg_pool2d(frame_diff_raw_4d, kernel_size=2, stride=2)
         frame_diff = frame_diff.squeeze(1)  # [F, H, W]
         frame_diff = frame_diff.view(group_size, spatial_size)  # [F, H*W]
-
-        if self.token_weight_gamma != 1.0:
-            mean_diff = frame_diff.mean(dim=1, keepdim=True)
-            frame_diff = mean_diff * torch.pow(frame_diff / (mean_diff + 1e-8), self.token_weight_gamma)
 
         if self.weight_norm_mode == "max":
             frame_max = frame_diff.max(dim=1, keepdim=True)[0]
@@ -1862,26 +1747,6 @@ class WanModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         else:
             frame_mean = frame_diff.mean(dim=1, keepdim=True)
             weights = frame_diff / (frame_mean + 1e-8)
-
-        weights = weights.clamp(min=self.weight_min, max=self.weight_max)
-
-        if group_idx == 0 and self.group0_first_frame_mode == "ones":
-            weights[0, :] = 1.0
-
-        if self.weight_smooth_grid_size > 1:
-            H_val = H.item() if hasattr(H, 'item') else H
-            W_val = W.item() if hasattr(W, 'item') else W
-            smoothed_weights = []
-            for f in range(group_size):
-                frame_weights = weights[f].view(H_val, W_val)
-                smoothed_frame = self._smooth_weights_by_grid(
-                    frame_weights, H_val, W_val, self.weight_smooth_grid_size
-                )
-                smoothed_weights.append(smoothed_frame.view(-1))
-            weights = torch.stack(smoothed_weights, dim=0)
-
-        if self.first_frame_full_weight:
-            weights[0, :] = 1.0
 
         weights = weights.view(L)
 

@@ -98,10 +98,6 @@ def build_pipeline(args: argparse.Namespace) -> DiffusionForcingPipeline:
             warmup_steps=args.token_cache_warmup,
             phase1_update_count=args.token_phase1_update_count,
             distance_mode=args.token_distance_mode,
-            weight_min=args.token_weight_min,
-            weight_max=args.token_weight_max,
-            weight_gamma=args.token_weight_gamma,
-            weight_smooth_grid_size=args.weight_smooth_grid_size,
         )
 
     # Configure frame diff weight mode
@@ -117,12 +113,10 @@ def build_pipeline(args: argparse.Namespace) -> DiffusionForcingPipeline:
         pipe.transformer.set_weight_norm_mode(args.weight_norm_mode, args.weight_floor)
 
     # Configure temporal consistency constraint
-    if args.enable_temporal_consistency or args.first_frame_full_weight or args.group0_first_frame_mode != "ones":
+    if args.enable_temporal_consistency:
         pipe.transformer.set_temporal_consistency_config(
             enable=args.enable_temporal_consistency,
             threshold=args.temporal_consistency_threshold,
-            first_frame_full_weight=args.first_frame_full_weight,
-            group0_first_frame_mode=args.group0_first_frame_mode
         )
 
     # Configure minimum update ratio
@@ -323,15 +317,6 @@ def main():
     parser.add_argument("--token_distance_mode", type=str, default="global",
                         choices=["token", "global"],
                         help="Distance calculation mode")
-    parser.add_argument("--token_weight_min", type=float, default=-100,
-                        help="Minimum weight for token cache")
-    parser.add_argument("--token_weight_max", type=float, default=100,
-                        help="Maximum weight for token cache")
-    parser.add_argument("--token_weight_gamma", type=float, default=1.0,
-                        help="Power transform parameter for weights")
-    parser.add_argument("--weight_smooth_grid_size", type=int, default=1,
-                        help="Weight smoothing grid size")
-
     # ============================================
     # Frame difference weight parameters
     # ============================================
@@ -350,12 +335,6 @@ def main():
                         help="Enable temporal consistency constraint")
     parser.add_argument("--temporal_consistency_threshold", type=float, default=0.5,
                         help="Temporal consistency threshold: when more than this ratio of frames need update, all frames at that position update")
-    parser.add_argument("--first_frame_full_weight", action="store_true",
-                        help="Use full weight (all ones) for the first frame")
-    parser.add_argument("--group0_first_frame_mode", type=str, default="ones",
-                        choices=["ones", "second_frame", "group_mean"],
-                        help="Weight estimation mode for the first frame in group0")
-
     # ============================================
     # Minimum update ratio parameters
     # ============================================

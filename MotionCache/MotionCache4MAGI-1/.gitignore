@@ -1,9 +1,0 @@
-__pycache__
-*.pyc
-*.log
-*.pt
-*.mp4
-ckpt
-downloads
-*.whl
-*.png

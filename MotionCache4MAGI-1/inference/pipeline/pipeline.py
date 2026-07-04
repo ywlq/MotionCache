@@ -21,7 +21,7 @@ from inference.model.dit import get_dit
 
 from .prompt_process import get_txt_embeddings
 from .video_generate import generate_per_chunk, SampleTransport
-from .video_process import post_chunk_process, process_image, process_prefix_video, save_video_to_disk, apply_reuse_mask_overlay, apply_temporal_diff_overlay, apply_temporal_weights_overlay
+from .video_process import post_chunk_process, process_image, process_prefix_video, save_video_to_disk, apply_reuse_mask_overlay
 
 
 class MagiPipeline:
@@ -82,65 +82,6 @@ class MagiPipeline:
 
             save_video_to_disk(videos_with_mask, masked_output_path, fps=self.config.runtime_config.fps)
             print_rank_0(f"Masked video saved to: {masked_output_path}")
-
-        # Apply temporal difference visualization and save as separate file for each step
-        if (hasattr(SampleTransport, 'visualize_temporal_diff') and
-            SampleTransport.visualize_temporal_diff and
-            hasattr(SampleTransport, 'final_temporal_diff_masks') and
-            SampleTransport.final_temporal_diff_masks and
-            len(SampleTransport.final_temporal_diff_masks) > 0 and
-            hasattr(SampleTransport, 'final_temporal_diff_latent_sizes')):
-
-            # Iterate over all steps and generate a video for each
-            for step in sorted(SampleTransport.final_temporal_diff_masks.keys()):
-                temporal_diff_mask = SampleTransport.final_temporal_diff_masks[step]
-                latent_size = SampleTransport.final_temporal_diff_latent_sizes[step]
-
-                print_rank_0(f"[DEBUG] Applying temporal diff overlay for step {step}...")
-                videos_with_temporal_diff = apply_temporal_diff_overlay(
-                    videos,
-                    temporal_diff_mask,
-                    latent_size
-                )
-
-                # Generate temporal diff output path with step number
-                import os
-                base, ext = os.path.splitext(output_path)
-                temporal_diff_output_path = f"{base}_temporal_diff_step{step}{ext}"
-
-                save_video_to_disk(videos_with_temporal_diff, temporal_diff_output_path, fps=self.config.runtime_config.fps)
-                print_rank_0(f"Temporal difference video for step {step} saved to: {temporal_diff_output_path}")
-
-        # Apply temporal weights visualization and save as separate file for each step
-        if (hasattr(SampleTransport, 'visualize_temporal_weights') and
-            SampleTransport.visualize_temporal_weights and
-            hasattr(SampleTransport, 'final_temporal_weights_masks') and
-            SampleTransport.final_temporal_weights_masks and
-            len(SampleTransport.final_temporal_weights_masks) > 0 and
-            hasattr(SampleTransport, 'final_temporal_weights_latent_sizes') and
-            hasattr(SampleTransport, 'final_temporal_weights_token_dims')):
-
-            # Iterate over all steps and generate a video for each
-            for step in sorted(SampleTransport.final_temporal_weights_masks.keys()):
-                weights_mask = SampleTransport.final_temporal_weights_masks[step]
-                latent_size = SampleTransport.final_temporal_weights_latent_sizes[step]
-                token_dims = SampleTransport.final_temporal_weights_token_dims[step]
-
-                print_rank_0(f"[DEBUG] Applying temporal weights overlay for step {step}...")
-                videos_with_weights = apply_temporal_weights_overlay(
-                    videos,
-                    weights_mask,
-                    latent_size,
-                    token_dims
-                )
-
-                # Generate temporal weights output path with step number
-                import os
-                base, ext = os.path.splitext(output_path)
-                weights_output_path = f"{base}_temporal_weights_step{step}{ext}"
-
-                save_video_to_disk(videos_with_weights, weights_output_path, fps=self.config.runtime_config.fps)
-                print_rank_0(f"Temporal weights video for step {step} saved to: {weights_output_path}")
 
         mem_allocated_gb = torch.cuda.max_memory_allocated() / 1024**3
         mem_reserved_gb = torch.cuda.max_memory_reserved() / 1024**3

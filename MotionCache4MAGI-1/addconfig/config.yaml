@@ -27,37 +27,3 @@ temporal_weight_floor: 0.6  # Floor for temporal weight normalization, maps to [
 temporal_weight_power: 1.0  # Power for nonlinear normalization (default: null=linear). Values < 1 make more tokens closer to 1 (convex curve)
 tokenwise_l1_mode: chunk  # Mode for token-level rel_l1 calculation: "chunk" uses chunk-level rel_l1 for all tokens, "token" computes per-token rel_l1 independently
 enable_temporal_voting: false
-
-# Token reuse ratio control
-# Option 1: Dynamic ratio (recommended) - ratio increases linearly during hierarchical phase
-# initial_token_reuse_ratio: 0.5  # Initial token reuse ratio at the start of hierarchical phase (early steps have larger errors, so limit reuse)
-# final_token_reuse_ratio: 0.8    # Final token reuse ratio at the end of hierarchical phase (later steps have smaller errors, allow more reuse)
-# Option 2: Fixed ratio (backward compatibility) - constant ratio throughout
-# max_token_reuse_ratio: 0.5  # Fixed maximum ratio of tokens that can be reused (0~1). Set to 1.0 to allow all tokens to be reused.
-# Note: If both initial_token_reuse_ratio and final_token_reuse_ratio are set, dynamic ratio is used. Otherwise, max_token_reuse_ratio is used.
-
-# Continuous reuse tracking (adaptive refresh mechanism)
-enable_continuous_reuse_tracking: false  # Enable continuous reuse tracking (default: false for backward compatibility)
-
-# Two refresh modes (choose one):
-# Mode 1: Dynamic threshold - gradually lower threshold for tokens with high reuse counts
-#   continuous_reuse_max_count: null  # Set to null to use dynamic threshold mode
-#   continuous_reuse_decay_mode: "exponential"  # "exponential" or "linear"
-#   continuous_reuse_decay_factor: 0.1
-#
-# Mode 2: Force forward - force forward after N consecutive reuses
-#   continuous_reuse_max_count: 5  # Force forward after N consecutive reuses
-#   continuous_reuse_decay_mode: null  # Not used in force forward mode
-#   continuous_reuse_decay_factor: null  # Not used in force forward mode
-continuous_reuse_max_count: 5  # If set, force forward after this many consecutive reuses; if null, use dynamic threshold mode
-continuous_reuse_decay_mode: null  # "exponential" or "linear" - only used if max_count is null
-continuous_reuse_decay_factor: null  # For exponential: decay rate (0.1 = multiply by 0.9 each time); For linear: divisor factor (0.1 = divide by 1 + 0.1*count)
-
-# frame diff visualize
-visualize_temporal_diff: false
-temporal_diff_step: [0,1,2,3,4,5,6,7]  # Can be a single step (e.g., 1) or multiple steps (e.g., [1, 3, 5])
-temporal_diff_mode: clean  # Mode: "clean" uses integrated clean latent, "noise" uses model output (predicted noise)
-
-# temporal weights visualize
-visualize_temporal_weights: false
-temporal_weights_step: [0,1,2,3,4,5,6,7]  # Can be a single step (e.g., 1) or multiple steps (e.g., [1, 3, 5])
